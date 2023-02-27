@@ -6,6 +6,14 @@ use PHPUnit\Framework\TestCase;
 
 class ApiTest extends TestCase
 {
+    private static function makeConfig($dsn){
+        return [
+            'blowfish_secret' => 'abc',
+            'Servers' => [
+                1 => ['auth_type' => 'token', 'dsn' => $dsn]
+            ]
+        ];
+    }
     
     /**
      * 
@@ -26,9 +34,9 @@ class ApiTest extends TestCase
         if(!$action){
             $action = 'query';
         }
-        $api = new \Mardraze\SqlApi\Api(['secureToken' => 'abc', 'cli' => true]);
         $dbFile = __DIR__.'/../storage/test-db-sqlite-contracts.sq3';
-        $authInput = ['action' => 'login', 'dsn' => 'sqlite:'.$dbFile];
+        $api = new \Mardraze\SqlApi\Api(self::makeConfig('sqlite:'.$dbFile));
+        $authInput = ['action' => 'login'];
         $authResponse = $api->processInput($authInput);
         $token = $authResponse['token'];
         $input = ['action' => $action, 'sql' => $sql, 'params' => $params];
@@ -38,13 +46,13 @@ class ApiTest extends TestCase
     }
     
     public function testLogin(){
-        $api = new \Mardraze\SqlApi\Api(['secureToken' => 'abc', 'cli' => true]);
         $dbFile = __DIR__.'/../storage/test-db-sqlite-'.uniqid().'.sq3';
         if(file_exists($dbFile)){
             unlink($dbFile);
         }
+        $api = new \Mardraze\SqlApi\Api(self::makeConfig('sqlite:'.$dbFile));
         
-        $input = ['action' => 'login', 'dsn' => 'sqlite:'.$dbFile];
+        $input = ['action' => 'login', 'server' => 1];
         
         $response = $api->processInput($input);
         
@@ -62,13 +70,14 @@ class ApiTest extends TestCase
     }
     
     public function testQuery(){
-        $api = new \Mardraze\SqlApi\Api(['secureToken' => 'abc', 'cli' => true]);
         $dbFile = __DIR__.'/../storage/test-db-sqlite-'.uniqid().'.sq3';
         if(file_exists($dbFile)){
             unlink($dbFile);
         }
         
-        $authInput = ['action' => 'login', 'dsn' => 'sqlite:'.$dbFile];
+        $api = new \Mardraze\SqlApi\Api(self::makeConfig('sqlite:'.$dbFile));
+        
+        $authResult = $api->processInput(['action' => 'login']);
         
         $input = ['action' => 'query', 'sql' => 'CREATE TABLE contacts (
                 contact_id INTEGER PRIMARY KEY,
@@ -77,8 +86,10 @@ class ApiTest extends TestCase
                 email TEXT NOT NULL UNIQUE,
                 phone TEXT NOT NULL UNIQUE
         );'];
+        $input['token'] = $authResult['token'];
+        $input['md5'] = md5(json_encode($input));
         
-        $response = self::processInput($api, $authInput, $input);
+        $response = $api->processInput($input);
 
         if(file_exists($dbFile)){
             unlink($dbFile);
@@ -90,11 +101,11 @@ class ApiTest extends TestCase
     public function testQueryInsert(){
         $this->assertTrue(true);
         return;
-        $api = new \Mardraze\SqlApi\Api(['secureToken' => 'abc', 'cli' => true]);
         $dbFile = __DIR__.'/../storage/test-db-sqlite-'.date('His').'-'.uniqid().'.sq3';
         if(file_exists($dbFile)){
             unlink($dbFile);
         }
+        $api = new \Mardraze\SqlApi\Api(self::makeConfig('sqlite:'.$dbFile));
 
         $authInput = ['action' => 'login', 'dsn' => 'sqlite:'.$dbFile];
         
@@ -142,9 +153,9 @@ class ApiTest extends TestCase
     public function testQuerySelect(){
         $sql = 'SELECT * FROM contacts WHERE contact_id < 10';
         
-        $api = new \Mardraze\SqlApi\Api(['secureToken' => 'abc', 'cli' => true]);
         $dbFile = __DIR__.'/../storage/test-db-sqlite-contracts.sq3';
-        $authInput = ['action' => 'login', 'dsn' => 'sqlite:'.$dbFile];
+        $api = new \Mardraze\SqlApi\Api(self::makeConfig('sqlite:'.$dbFile));
+        $authInput = ['action' => 'login'];
         $authResponse = $api->processInput($authInput);
         $token = $authResponse['token'];
         $input = ['action' => 'query', 'sql' => $sql];
@@ -160,9 +171,9 @@ class ApiTest extends TestCase
     public function testQueryXml(){
         $sql = 'SELECT * FROM contacts WHERE contact_id < 10';
         
-        $api = new \Mardraze\SqlApi\Api(['secureToken' => 'abc', 'cli' => true]);
         $dbFile = __DIR__.'/../storage/test-db-sqlite-contracts.sq3';
-        $authInput = ['action' => 'login', 'dsn' => 'sqlite:'.$dbFile];
+        $api = new \Mardraze\SqlApi\Api(self::makeConfig('sqlite:'.$dbFile));
+        $authInput = ['action' => 'login'];
         $authResponse = $api->processInput($authInput);
         $token = $authResponse['token'];
         $input = ['action' => 'query-xml', 'sql' => $sql];

@@ -21,35 +21,25 @@ use Firebase\JWT\Key;
 class Api
 {
 
-    protected $secureToken;
-    protected $cli = false;
+    protected $secret;
+    protected $http = false;
     protected $expireTime = 1440;
     protected $error;
-
+    protected $cfg;
+    protected $currentServer;
+    
     /**
      * Constructor
      * 
-     * @param array $options Optional parameters, key description
+     * @param array $cfg Optional parameters, key description
      *                       - secureToken
-     *                       - cli
+     *                       - http
      */
-    public function __construct($options = [])
+    public function __construct($cfg = [])
     {
-        if (isset($options['secureToken'])) {
-            $this->secureToken = $options['secureToken'];
-        } else if (defined('SECURE_TOKEN') && SECURE_TOKEN) {
-            $this->secureToken = SECURE_TOKEN;
-        }
-
-        if (isset($options['expireTime'])) {
-            if ($options['expireTime'] > 0) {
-                $this->expireTime = (int) $options['expireTime'];
-            } else {
-                throw new \ErrorException('expireTime option should be greater than zero');
-            }
-        }
-
-        $this->cli = isset($options['cli']) && $options['cli'];
+        $this->http = isset($cfg['http']) && $cfg['http'];
+        $this->secret = isset($cfg['blowfish_secret']) ? $cfg['blowfish_secret'] : '';
+        $this->cfg = $cfg;
     }
 
     /**
@@ -60,13 +50,9 @@ class Api
      */
     public function processInput($input = null)
     {
-        if (!$this->secureToken) {
-            return $this->fail('invalid-config', 'config.inc.php file is invalid, please define SECURE_TOKEN constant or remove config.inc.php file to generate it automatically');
-        }
-
         if (null === $input) {
             $content = file_get_contents('php://input');
-                                    
+
             if($content){
                 $input = json_decode($content, true);
             }
@@ -86,35 +72,44 @@ class Api
         }
 
         if ($input) {
-            if (isset($input['action'])) {
-                if ($input['action'] === 'login') {
-                    return $this->login($input);
-                } else {
-                    if ($this->isValidMd5($input)) {
-                        if (isset($input['token'])) {
-                            try {
-                                switch ($input['action']) {
-                                    case "query":
-                                        return $this->query($input);
-                                    case "query-xml":
-                                        return $this->queryXml($input);
-                                    default:
-                                        return $this->fail('unknown-action', 'Please set valid action parameter');
-                                }
-                            } catch (\Exception $ex) {
-                                if ($this->error) {
-                                    return $this->fail($this->error['code'], $this->error['message']);
-                                } else {
-                                    return $this->fail('exception', $ex->getMessage());
+            if(!isset($input['server'])){
+                $input['server'] = 1;
+            }
+            
+            if(isset($this->cfg['Servers'][$input['server']])){
+                $this->currentServer = $this->cfg['Servers'][$input['server']];
+                if (isset($input['action'])) {
+                    if ($input['action'] === 'login') {
+                        return $this->login($input);
+                    } else {
+                        if ($this->isValidMd5($input)) {
+                            if (isset($input['token'])) {
+                                try {
+                                    switch ($input['action']) {
+                                        case "query":
+                                            return $this->query($input);
+                                        case "query-xml":
+                                            return $this->queryXml($input);
+                                        default:
+                                            return $this->fail('unknown-action', 'Please set valid action parameter');
+                                    }
+                                } catch (\Exception $ex) {
+                                    if ($this->error) {
+                                        return $this->fail($this->error['code'], $this->error['message']);
+                                    } else {
+                                        return $this->fail('exception', $ex->getMessage());
+                                    }
                                 }
                             }
+                        } else {
+                            return $this->fail('invalid-token', 'Token is invalid or expired');
                         }
-                    } else {
-                        return $this->fail('invalid-token', 'Token is invalid or expired');
                     }
+                } else {
+                    return $this->fail('action-not-set', 'Please set action parameter');
                 }
             } else {
-                return $this->fail('action-not-set', 'Please set action parameter');
+                return $this->fail('invalid-server', 'Please set valid server parameter');
             }
         } else {
             return $this->fail('invalid-input', 'Please POST valid json');
@@ -126,59 +121,89 @@ class Api
      * @param string $token
      * @return \PDO
      */
-    protected function connect($token)
+    protected function connect($input)
     {
-        if ($token) {
-            $decoded = (array) \Firebase\JWT\JWT::decode($token, new \Firebase\JWT\Key($this->secureToken, 'HS256'));
-            if (isset($decoded['iat'])) {
-                $iat = $decoded['iat'];
-                if ($iat > time() - $this->expireTime) {
-
-                    $username = null;
-
-                    if (isset($decoded['username'])) {
-                        $username = $decoded['username'];
-                    }
-
-                    $password = null;
-                    if (isset($decoded['password'])) {
-                        $password = $decoded['password'];
-                    }
-
-                    return new \PDO($decoded['dsn'], $username, $password);
-                } else {
-                    $this->error = [
-                        'code' => 'token-expired',
-                        'message' => 'Token expired, please login again'
-                    ];
-                }
+        $authType = $this->currentServer['auth_type'];
+        
+        if($authType == 'session'){
+            if(isset($_SESSION['auth_'.$input['server']])){
+                $decoded = $_SESSION['auth_'.$input['server']];
+                $decoded['iat'] = time();
             } else {
                 $this->error = [
-                    'code' => 'token-invalid',
-                    'message' => 'Token invalid, no iat field'
+                    'code' => 'session-not-set',
+                    'message' => 'Session is not set, please login again'
+                ];
+            }
+        }else if($authType == 'token'){
+            if(isset($input['token'])){
+                $token = $input['token'];
+                $decoded = (array) \Firebase\JWT\JWT::decode($token, new \Firebase\JWT\Key($this->secret, 'HS256'));
+            } else {
+                $this->error = [
+                    'code' => 'token-not-set',
+                    'message' => 'Token is not set, please login to fetch token'
+                ];
+            }
+        }
+        
+        if (isset($decoded['iat'])) {
+            $iat = $decoded['iat'];
+            if ($iat > time() - $this->expireTime) {
+
+                $username = null;
+
+                if (isset($decoded['username'])) {
+                    $username = $decoded['username'];
+                }
+
+                $password = null;
+                if (isset($decoded['password'])) {
+                    $password = $decoded['password'];
+                }
+
+                return new \PDO($this->currentServer['dsn'], $username, $password);
+            } else {
+                $this->error = [
+                    'code' => 'token-expired',
+                    'message' => 'Token expired, please login again'
                 ];
             }
         } else {
             $this->error = [
-                'code' => 'token-not-set',
-                'message' => 'Token is not set, please login to fetch token'
+                'code' => 'token-invalid',
+                'message' => 'Token invalid, no iat field'
             ];
         }
     }
 
     protected function isValidMd5($input)
     {
-        if (isset($input['token']) && isset($input['md5'])) {
-            $md5 = $input['md5'];
-            unset($input['md5']);
-            return md5(json_encode($input)) === $md5;
+        if(!isset($this->currentServer['check_md5'])){
+            return true;
         }
-        return false;
+
+        if($this->currentServer['check_md5']){
+            return true;
+        }
+
+        if($this->currentServer['auth_type'] == 'session'){
+            return true;
+        }
+
+        if($this->currentServer['auth_type'] == 'token'){
+            if (isset($input['token']) && isset($input['md5'])) {
+                $md5 = $input['md5'];
+                unset($input['md5']);
+                return md5(json_encode($input)) === $md5;
+            }
+            return false;
+        }
     }
 
     protected function queryFetch($input)
     {
-        $pdo = $this->connect($input['token']);
+        $pdo = $this->connect($input);
 
         $stm = $pdo->prepare($input['sql']);
 
@@ -236,21 +261,17 @@ class Api
         }
         
         $xml = '<result><success>1</success><updatedRowsCount>'.$result['updatedRowsCount'].'</updatedRowsCount><lastInsertId>'.$result['lastInsertId'].'</lastInsertId><result>'.$rows.'</result></result>';
-        if($this->cli){
-            return $xml;
+        if($this->http){
+            header('Content-Type: application/xml; charset=UTF-8');
+            echo $xml;
+            exit;
         }
         
-        header('Content-Type: application/xml; charset=UTF-8');
-        echo $xml;
-        exit;
+        return $xml;
     }
 
     protected function login($input)
     {
-        if (!isset($input['dsn'])) {
-            return $this->fail('no-dsn-parameter', 'Please set dsn parameter, see https://www.php.net/manual/en/pdo.construct.php');
-        }
-
         $username = null;
 
         if (isset($input['username'])) {
@@ -263,10 +284,16 @@ class Api
         }
 
         try {
-            new \PDO($input['dsn'], $username, $password);
-            $input['iat'] = time();
-            $token = JWT::encode($input, $this->secureToken, 'HS256');
-            return $this->success(['token' => $token]);
+            new \PDO($this->currentServer['dsn'], $username, $password);
+            
+            if($this->currentServer['auth_type'] == 'session'){
+                $_SESSION['auth_'.$input['server']] = $input;
+                return $this->success();
+            }else if($this->currentServer['auth_type'] == 'token'){
+                $input['iat'] = time();
+                $token = JWT::encode($input, $this->secret, 'HS256');
+                return $this->success(['token' => $token]);
+            }
         } catch (\Exception $ex) {
             return $this->fail('login-pdo-exception', $ex->getMessage());
         }
@@ -288,12 +315,12 @@ class Api
 
     protected function jsonResponse($data)
     {
-        if ($this->cli) {
-            return $data;
+        if ($this->http) {
+            header('Content-Type: application/json; charset=UTF-8');
+            echo json_encode($data);
+            exit;
         }
-        header('Content-Type: application/json; charset=UTF-8');
-        echo json_encode($data);
-        exit;
+        return $data;
     }
 
 }
