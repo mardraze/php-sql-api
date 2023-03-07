@@ -70,14 +70,20 @@ class ApiTest extends TestCase
     }
     
     public function testQuery(){
-        $dbFile = __DIR__.'/../storage/test-db-sqlite-'.uniqid().'.sq3';
-        if(file_exists($dbFile)){
-            unlink($dbFile);
-        }
-        
+        $dbFile = __DIR__.'/../storage/test-db-sqlite-create.sq3';
+
         $api = new \Mardraze\SqlApi\Api(self::makeConfig('sqlite:'.$dbFile));
         
         $authResult = $api->processInput(['action' => 'login']);
+        
+        
+        $input = ['action' => 'query', 'sql' => 'DROP TABLE IF EXISTS contacts;'];
+        $input['token'] = $authResult['token'];
+        $input['md5'] = md5(json_encode($input));
+        
+        $response = $api->processInput($input);
+
+        $this->assertTrue($response['success']);
         
         $input = ['action' => 'query', 'sql' => 'CREATE TABLE contacts (
                 contact_id INTEGER PRIMARY KEY,
@@ -91,10 +97,6 @@ class ApiTest extends TestCase
         
         $response = $api->processInput($input);
 
-        if(file_exists($dbFile)){
-            unlink($dbFile);
-        }
-        
         $this->assertTrue($response['success']);
     }
     
@@ -206,17 +208,81 @@ class ApiTest extends TestCase
     
     public function testLoggedIn(){
         $dbFile = __DIR__.'/../storage/test-db-sqlite-contracts.sq3';
-        $api = new \Mardraze\SqlApi\Api(self::makeConfig('sqlite:'.$dbFile));
+        $api = new \Mardraze\SqlApi\Api([
+            'blowfish_secret' => 'abc',
+            'Servers' => [
+                1 => ['auth_type' => 'token', 'dsn' => 'sqlite:'.$dbFile],
+                2 => ['auth_type' => 'token', 'dsn' => 'sqlite:'.$dbFile],
+            ]
+        ]);
         $response = $api->processInput(['action' => 'loggedIn']);
         $this->assertTrue($response['success']);
         $this->assertFalse($response['serverLogin'][0]['loggedIn']);
+        $this->assertFalse($response['serverLogin'][1]['loggedIn']);
         $this->assertEquals($response['serverLogin'][0]['id'], 1);
         
-        $authResponse = $api->processInput(['action' => 'login', 'dsn' => 'sqlite:'.$dbFile]);
+        $authResponse = $api->processInput(['action' => 'login', 'server' => 2]);
         $token = $authResponse['token'];
 
         $response = $api->processInput(['action' => 'loggedIn', 'token' => $token]);
-        $this->assertTrue($response['serverLogin'][0]['loggedIn']);
+        
+        $this->assertFalse($response['serverLogin'][0]['loggedIn']);
+        $this->assertTrue($response['serverLogin'][1]['loggedIn']);
+    }
+    
+    public function testAnonymous(){
+        $dbFile = __DIR__.'/../storage/test-db-sqlite-contracts.sq3';
+        $api = new \Mardraze\SqlApi\Api([
+            'blowfish_secret' => 'abc',
+            'Servers' => [
+                1 => ['auth_type' => 'token', 'dsn' => 'sqlite:'.$dbFile],
+                2 => ['auth_type' => 'token', 'dsn' => 'sqlite:'.$dbFile, 'anonymous' => true],
+            ]
+        ]);
+        $response = $api->processInput(['action' => 'loggedIn']);
+        $this->assertFalse($response['serverLogin'][0]['loggedIn']);
+        $this->assertTrue($response['serverLogin'][1]['loggedIn']);
+    }
+    
+    public function testLogout(){
+        session_unset();
+        $dbFile = __DIR__.'/../storage/test-db-sqlite-contracts.sq3';
+        $api = new \Mardraze\SqlApi\Api([
+            'blowfish_secret' => 'abc',
+            'Servers' => [
+                1 => ['auth_type' => 'session', 'dsn' => 'sqlite:'.$dbFile],
+                2 => ['auth_type' => 'session', 'dsn' => 'sqlite:'.$dbFile],
+            ]
+        ]);
+        
+        $api->processInput(['action' => 'login', 'server' => 2]);
+        $response = $api->processInput(['action' => 'loggedIn']);
+        $this->assertFalse($response['serverLogin'][0]['loggedIn']);
+        $this->assertTrue($response['serverLogin'][1]['loggedIn']);
+        $api->processInput(['action' => 'logout', 'server' => 2]);
+
+        $response = $api->processInput(['action' => 'loggedIn']);
+        $this->assertFalse($response['serverLogin'][0]['loggedIn']);
+        $this->assertFalse($response['serverLogin'][1]['loggedIn']);
+        
+        session_unset();
+    }
+    
+    public function testAdditionalQueries(){
+        
+        $dbFile = __DIR__.'/../storage/test-db-sqlite-contracts.sq3';
+        $api = new \Mardraze\SqlApi\Api([
+            'blowfish_secret' => 'abc',
+            'Servers' => [
+                1 => ['auth_type' => 'token', 'dsn' => 'sqlite:'.$dbFile],
+                2 => ['auth_type' => 'token', 'dsn' => 'sqlite:'.$dbFile],
+            ]
+        ]);
+        
+        $response = $api->processInput(['action' => 'login', 'server' => 2, 'q' => ['SELECT * FROM contacts WHERE contact_id = 200', 'SELECT * FROM contacts WHERE contact_id = 201']]);
+        
+        $this->assertEquals($response['q'][0]['rows'][0]['contact_id'], '200');
+        $this->assertEquals($response['q'][1]['rows'][0]['contact_id'], '201');
     }
     
 }

@@ -27,7 +27,8 @@ class Api
     protected $error;
     protected $cfg;
     protected $currentServer;
-    
+    protected $currentInput;
+    protected $pdo;
     /**
      * Constructor
      * 
@@ -79,30 +80,33 @@ class Api
             if(isset($this->cfg['Servers'][$input['server']])){
                 $this->currentServer = $this->cfg['Servers'][$input['server']];
                 if (isset($input['action'])) {
+                    $this->currentInput = $input;
                     if ($input['action'] === 'loggedIn') {
                         return $this->loggedIn($input);
                     }else if ($input['action'] === 'login') {
                         return $this->login($input);
+                    }else if ($input['action'] === 'logout') {
+                        return $this->logout($input);
                     } else {
                         if ($this->isValidMd5($input)) {
-                            if (isset($input['token'])) {
-                                try {
-                                    switch ($input['action']) {
-                                        case "query":
-                                            return $this->query($input);
-                                        case "query-xml":
-                                            return $this->queryXml($input);
-                                        default:
-                                            return $this->fail('unknown-action', 'Please set valid action parameter');
-                                    }
-                                } catch (\Exception $ex) {
-                                    if ($this->error) {
-                                        return $this->fail($this->error['code'], $this->error['message']);
-                                    } else {
-                                        return $this->fail('exception', $ex->getMessage());
-                                    }
+
+                            try {
+                                switch ($input['action']) {
+                                    case "query":
+                                        return $this->query($input);
+                                    case "query-xml":
+                                        return $this->queryXml($input);
+                                    default:
+                                        return $this->fail('unknown-action', 'Please set valid action parameter');
+                                }
+                            } catch (\Exception $ex) {
+                                if ($this->error) {
+                                    return $this->fail($this->error['code'], $this->error['message']);
+                                } else {
+                                    return $this->fail('exception', $ex->getMessage());
                                 }
                             }
+
                         } else {
                             return $this->fail('invalid-token', 'Token is invalid or expired');
                         }
@@ -125,6 +129,9 @@ class Api
      */
     protected function connect($input)
     {
+        if($this->pdo){
+            return $this->pdo;
+        }
         $authType = $this->currentServer['auth_type'];
         
         if($authType == 'session'){
@@ -163,8 +170,8 @@ class Api
                 if (isset($decoded['password'])) {
                     $password = $decoded['password'];
                 }
-
-                return new \PDO($this->currentServer['dsn'], $username, $password);
+                $this->pdo = new \PDO($this->currentServer['dsn'], $username, $password);
+                return $this->pdo;
             } else {
                 $this->error = [
                     'code' => 'token-expired',
@@ -207,6 +214,9 @@ class Api
     {
         $pdo = $this->connect($input);
 
+        if(!$pdo){
+            throw new \ErrorException('Unable to connect');
+        }
         $stm = $pdo->prepare($input['sql']);
 
         $params = [];
@@ -272,6 +282,27 @@ class Api
         return $xml;
     }
 
+    protected function logout($input)
+    {
+        foreach ($this->cfg['Servers'] as $id => $config){
+            $authType = $config['auth_type'];
+            if($authType == 'session'){
+                if(isset($input['server'])){
+                    if($input['server'] == $id){
+                        if(isset($_SESSION['auth_'.$id])){
+                            unset($_SESSION['auth_'.$id]);
+                        }
+                    }
+                }else{
+                    if(isset($_SESSION['auth_'.$id])){
+                        unset($_SESSION['auth_'.$id]);
+                    }
+                }
+            }
+        }
+        return $this->success();
+    }
+
     protected function loggedIn($input)
     {
         $serverLogin = [];
@@ -279,9 +310,12 @@ class Api
         foreach ($this->cfg['Servers'] as $id => $config){
             $authType = $config['auth_type'];
             $loggedIn = false;
+            if(isset($config['anonymous']) && $config['anonymous']){
+                $loggedIn = true;
+            }
             if($authType == 'session'){
-                if(isset($_SESSION['auth_'.$input['server']])){
-                    $decoded = $_SESSION['auth_'.$input['server']];
+                if(isset($_SESSION['auth_'.$id])){
+                    $decoded = $_SESSION['auth_'.$id];
                     $decoded['iat'] = time();
                 }
             }else if($authType == 'token'){
@@ -293,14 +327,16 @@ class Api
 
             if (isset($decoded['iat'])) {
                 $iat = $decoded['iat'];
-                if ($iat > time() - $this->expireTime) {
+                if ($iat > time() - $this->expireTime && isset($decoded['server']) && $decoded['server'] == $id) {
                     $loggedIn = true;
                 }
             }
 
+            $label = isset($config['label']) ? $config['label'] : 'Server '.$id;
+            
             $serverLogin[] = [
                 'id' => $id,
-                isset($config['label']) ? $config['label'] : 'Server '.$id,
+                'label' => $label,
                 'loggedIn' => $loggedIn
             ];
         }
@@ -332,6 +368,7 @@ class Api
             }else if($this->currentServer['auth_type'] == 'token'){
                 $input['iat'] = time();
                 $token = JWT::encode($input, $this->secret, 'HS256');
+                $this->currentInput['token'] = $token;
                 return $this->success(['token' => $token]);
             }
         } catch (\Exception $ex) {
@@ -350,6 +387,44 @@ class Api
     protected function success($data = [])
     {
         $data['success'] = true;
+        
+        if($this->currentInput && isset($this->currentInput['q']) && is_array($this->currentInput['q'])){
+            $token = null;
+            if(isset($this->currentInput['token'])){
+                $token = $this->currentInput['token'];
+            }
+            $responseQueryList = [];
+            foreach ($this->currentInput['q'] as $q){
+                $responseQuery = null;
+                try{
+                    $this->error = null;
+                    if(is_array($q)){
+                        if($token){
+                            $q['token'] = $token;
+                        }
+                        $responseQuery = $this->queryFetch($q);
+                    }else{
+                        $q2 = ['sql' => $q];
+                        if($token){
+                            $q2['token'] = $token;
+                        }
+                        $responseQuery = $this->queryFetch($q2);
+                    }
+                } catch (\Exception $ex) {
+                    if($this->error){
+                        $responseQuery = $this->error;
+                    }else{
+                        $responseQuery = [
+                            'code' => 'unknown-query-error',
+                            'message' => 'Unknown query error'
+                        ];
+                    }
+                }
+                $responseQueryList []= $responseQuery;
+            }
+            $data['q'] = $responseQueryList;
+        }
+        
         return $this->jsonResponse($data);
     }
 

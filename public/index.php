@@ -1,6 +1,7 @@
 <?php
 
 require __DIR__.'/../vendor/autoload.php';
+session_start();
 
 if(!file_exists(__DIR__.'/../config.inc.php') && is_writable(__DIR__.'/..')){
     $config = file_get_contents(__DIR__.'/../config.sample.inc.php');
