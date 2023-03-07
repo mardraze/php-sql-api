@@ -79,7 +79,9 @@ class Api
             if(isset($this->cfg['Servers'][$input['server']])){
                 $this->currentServer = $this->cfg['Servers'][$input['server']];
                 if (isset($input['action'])) {
-                    if ($input['action'] === 'login') {
+                    if ($input['action'] === 'loggedIn') {
+                        return $this->loggedIn($input);
+                    }else if ($input['action'] === 'login') {
                         return $this->login($input);
                     } else {
                         if ($this->isValidMd5($input)) {
@@ -268,6 +270,44 @@ class Api
         }
         
         return $xml;
+    }
+
+    protected function loggedIn($input)
+    {
+        $serverLogin = [];
+
+        foreach ($this->cfg['Servers'] as $id => $config){
+            $authType = $config['auth_type'];
+            $loggedIn = false;
+            if($authType == 'session'){
+                if(isset($_SESSION['auth_'.$input['server']])){
+                    $decoded = $_SESSION['auth_'.$input['server']];
+                    $decoded['iat'] = time();
+                }
+            }else if($authType == 'token'){
+                if(isset($input['token'])){
+                    $token = $input['token'];
+                    $decoded = (array) \Firebase\JWT\JWT::decode($token, new \Firebase\JWT\Key($this->secret, 'HS256'));
+                }
+            }
+
+            if (isset($decoded['iat'])) {
+                $iat = $decoded['iat'];
+                if ($iat > time() - $this->expireTime) {
+                    $loggedIn = true;
+                }
+            }
+
+            $serverLogin[] = [
+                'id' => $id,
+                isset($config['label']) ? $config['label'] : 'Server '.$id,
+                'loggedIn' => $loggedIn
+            ];
+        }
+        
+        return $this->success([
+            'serverLogin' => $serverLogin
+        ]);
     }
 
     protected function login($input)

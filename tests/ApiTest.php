@@ -204,4 +204,19 @@ class ApiTest extends TestCase
         $this->assertEquals('first 😋 name', $response2['result']['rows']['row']['v'][1]);
     }
     
+    public function testLoggedIn(){
+        $dbFile = __DIR__.'/../storage/test-db-sqlite-contracts.sq3';
+        $api = new \Mardraze\SqlApi\Api(self::makeConfig('sqlite:'.$dbFile));
+        $response = $api->processInput(['action' => 'loggedIn']);
+        $this->assertTrue($response['success']);
+        $this->assertFalse($response['serverLogin'][0]['loggedIn']);
+        $this->assertEquals($response['serverLogin'][0]['id'], 1);
+        
+        $authResponse = $api->processInput(['action' => 'login', 'dsn' => 'sqlite:'.$dbFile]);
+        $token = $authResponse['token'];
+
+        $response = $api->processInput(['action' => 'loggedIn', 'token' => $token]);
+        $this->assertTrue($response['serverLogin'][0]['loggedIn']);
+    }
+    
 }
